@@ -1,5 +1,5 @@
 ---
-title: "rudolph"
+title: "Rangifer tarandus Analysis"
 author: "Michael Sanfilippo"
 date: "2025-04-27"
 output: html_document
@@ -37,7 +37,6 @@ counts <- read.delim("GSE168746_genes.ec.tab", row.names = 1, check.names = FALS
 
 # Round expected counts for DESeq2 compatibility
 counts_rounded <- round(counts)
-counts_rounded
 ```
 
 ```{r}
@@ -121,9 +120,6 @@ res_day0_top25 <- res_day0_top25[, c("gene", "baseMean", "log2FoldChange", "padj
 res_day0_top25$baseMean <- round(res_day0_top25$baseMean, 2)
 res_day0_top25$log2FoldChange <- round(res_day0_top25$log2FoldChange, 2)
 res_day0_top25$padj <- signif(res_day0_top25$padj, 3)
-
-# Display the table
-res_day0_top25
 ```
 
 ```{r}
@@ -230,8 +226,6 @@ go_annotation <- data.frame(
   Ontology = go_ontology[valid_idx],
   stringsAsFactors = FALSE
 )
-
-go_annotation
 ```
 
 ```{r}
@@ -332,9 +326,6 @@ table(signature_counts$Category)
 ```
 
 ```{r}
-# Suppose you already classified GO terms and InterPro as:
-# (you should have a column called 'Category' like "Fibrosis", "Regeneration", "Other")
-
 # For GO Terms:
 fibrosis_go <- go_annotation %>%
   filter(Category == "Fibrosis")
@@ -349,7 +340,6 @@ fibrosis_interpro <- signature_counts %>%
 regeneration_interpro <- signature_counts %>%
   filter(Category == "Regeneration")
 
-# View them:
 fibrosis_go
 regeneration_go
 fibrosis_interpro
@@ -392,8 +382,6 @@ res_day3_top15$baseMean <- round(res_day3_top15$baseMean, 2)
 res_day3_top15$log2FoldChange <- round(res_day3_top15$log2FoldChange, 2)
 res_day3_top15$padj <- signif(res_day3_top15$padj, 3)
 
-# Display the table
-res_day3_top15
 ```
 
 ```{r}
@@ -500,8 +488,6 @@ go_annotation_day3 <- data.frame(
   Ontology = go_ontology_day3[valid_idx],
   stringsAsFactors = FALSE
 )
-
-go_annotation_day3
 ```
 
 ```{r}
@@ -602,9 +588,6 @@ table(signature_counts_day3$Category)
 ```
 
 ```{r}
-# Suppose you already classified GO terms and InterPro as:
-# (you should have a column called 'Category' like "Fibrosis", "Regeneration", "Other")
-
 # For GO Terms:
 fibrosis_go_day3 <- go_annotation_day3 %>%
   filter(Category == "Fibrosis")
@@ -618,13 +601,6 @@ fibrosis_interpro_day3 <- signature_counts_day3 %>%
 
 regeneration_interpro_day3 <- signature_counts_day3 %>%
   filter(Category == "Regeneration")
-
-# View them:
-fibrosis_go_day3
-regeneration_go_day3
-fibrosis_interpro_day3
-regeneration_interpro_day3
-
 ```
 
 \*\* BACK VS ANTLER DAY 7\*\*
@@ -661,10 +637,6 @@ res_day7_top25 <- res_day7_top25[, c("gene", "baseMean", "log2FoldChange", "padj
 res_day7_top25$baseMean <- round(res_day7_top25$baseMean, 2)
 res_day7_top25$log2FoldChange <- round(res_day7_top25$log2FoldChange, 2)
 res_day7_top25$padj <- signif(res_day7_top25$padj, 3)
-
-# Display the table
-res_day7_top25
-
 ```
 
 
@@ -772,8 +744,6 @@ go_annotation_day7 <- data.frame(
   Ontology = go_ontology_day7[valid_idx],
   stringsAsFactors = FALSE
 )
-
-go_annotation_day7
 ```
 
 ```{r}
@@ -875,9 +845,6 @@ table(signature_counts_day7$Category)
 ```
 
 ```{r}
-# Suppose you already classified GO terms and InterPro as:
-# (you should have a column called 'Category' like "Fibrosis", "Regeneration", "Other")
-
 # For GO Terms:
 fibrosis_go_day7 <- go_annotation_day7 %>%
   filter(Category == "Fibrosis")
@@ -891,13 +858,6 @@ fibrosis_interpro_day7 <- signature_counts_day7 %>%
 
 regeneration_interpro_day7 <- signature_counts_day7 %>%
   filter(Category == "Regeneration")
-
-# View them:
-fibrosis_go_day7
-regeneration_go_day7
-fibrosis_interpro_day7
-regeneration_interpro_day7
-
 ```
 
 \*\* BACK VS ANTLER DAY 14\*\*
@@ -934,9 +894,6 @@ res_day14_top25 <- res_day14_top25[, c("gene", "baseMean", "log2FoldChange", "pa
 res_day14_top25$baseMean <- round(res_day14_top25$baseMean, 2)
 res_day14_top25$log2FoldChange <- round(res_day14_top25$log2FoldChange, 2)
 res_day14_top25$padj <- signif(res_day14_top25$padj, 3)
-
-# Display the table
-res_day14_top25
 ```
 
 ```{r}
@@ -1043,8 +1000,6 @@ go_annotation_day14 <- data.frame(
   Ontology = go_ontology_day14[valid_idx],
   stringsAsFactors = FALSE
 )
-
-go_annotation_day14
 ```
 
 ```{r}
@@ -1146,9 +1101,6 @@ table(signature_counts_day14$Category)
 ```
 
 ```{r}
-# Suppose you already classified GO terms and InterPro as:
-# (you should have a column called 'Category' like "Fibrosis", "Regeneration", "Other")
-
 # For GO Terms:
 fibrosis_go_day14 <- go_annotation_day14 %>%
   filter(Category == "Fibrosis")
@@ -1162,13 +1114,6 @@ fibrosis_interpro_day14 <- signature_counts_day14 %>%
 
 regeneration_interpro_day14 <- signature_counts_day14 %>%
   filter(Category == "Regeneration")
-
-# View them:
-fibrosis_go_day14
-regeneration_go_day14
-fibrosis_interpro_day14
-regeneration_interpro_day14
-
 ```
 
 ```{r}
@@ -1197,8 +1142,6 @@ degs_mapped <- bitr(
 
 # Extract only mapped ENTREZ IDs
 entrez_degs <- degs_mapped$ENTREZID
-length(entrez_degs)
-
 ```
 
 ```{r}
@@ -1212,13 +1155,11 @@ ego_all <- enrichGO(
   pvalueCutoff  = 0.05,
   readable      = TRUE
 )
-
 ```
 
 ```{r}
 # 4. View top 10 enriched terms (quick table)
-ego_all@result
-
+ # ego_all@result
 ```
 
 ```{r}
