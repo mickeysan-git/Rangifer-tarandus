@@ -1,0 +1,1306 @@
+---
+title: "rudolph"
+author: "Michael Sanfilippo"
+date: "2025-04-27"
+output: html_document
+---
+```{r}
+# Download the gene expression count matrix
+# download.file(
+ # url = "ftp://ftp.ncbi.nlm.nih.gov/geo/series/GSE168nnn/GSE168746/suppl/GSE168746_genes.ec.tab.gz",
+ # destfile = "GSE168746_genes.ec.tab.gz",
+ # mode = "wb")
+```
+
+```{r}
+# Unzip it
+# R.utils::gunzip("GSE168746_genes.ec.tab.gz")
+```
+
+```{r}
+library(DESeq2)
+library(tidyverse)
+library(ggplot2)
+library(clusterProfiler)
+library(org.Bt.eg.db)
+library(EnhancedVolcano)
+library(biomaRt)
+library(ashr)
+library(GO.db)
+library(AnnotationDbi)
+library(dplyr)
+```
+
+```{r}
+# Load the raw count matrix
+counts <- read.delim("GSE168746_genes.ec.tab", row.names = 1, check.names = FALSE)
+
+# Round expected counts for DESeq2 compatibility
+counts_rounded <- round(counts)
+counts_rounded
+```
+
+```{r}
+# Extract sample names
+sample_ids <- colnames(counts_rounded)
+colData <- data.frame(sample_id = sample_ids)
+
+# Parse metadata
+colData$animal <- sub("^Reindeer[_]*([A-Z0-9]+)_.*", "\\1", colData$sample_id)
+colData$tissue <- ifelse(grepl("Antler", sample_ids, ignore.case = TRUE), "Antler", "Back")
+colData$timepoint <- ifelse(grepl("day_0", sample_ids), "Day0",
+                            ifelse(grepl("day_3", sample_ids), "Day3",
+                                   ifelse(grepl("day_7", sample_ids), "Day7",
+                                          ifelse(grepl("day_14", sample_ids), "Day14", NA))))
+colData$control <- ifelse(grepl("Control", sample_ids, ignore.case = TRUE), "Control", "Wounded")
+
+# Combine tissue and timepoint into one group variable
+colData$group <- paste0(colData$tissue, "_", colData$timepoint)
+
+# Set rownames to match count matrix
+rownames(colData) <- sample_ids
+```
+
+```{r}
+unique(colData$animal)
+```
+
+```{r}
+colData_wounded <- colData[colData$control == "Wounded", ]
+counts_wounded <- counts_rounded[, rownames(colData_wounded)]
+colnames(counts_wounded)
+```
+
+```{r}
+table(colData$group, colData$control)
+```
+
+\*\* Due to missing data in GSE168746, Day 14 comparisons were conducted with 3 biological replicates per group. \*\*
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = counts_wounded,
+                              colData = colData_wounded,
+                              design = ~ group)
+
+# Filter low-count genes
+dds <- dds[rowSums(counts(dds)) >= 10, ]
+
+```
+
+\*\* BACK VS ANTLER DAY 0 \*\*
+
+```{r}
+# Set reference to Back_Day0
+dds$group <- relevel(dds$group, ref = "Back_Day0")
+
+# Run DESeq with updated reference
+dds <- DESeq(dds)
+
+# Extract DEGs and shrink LFCs
+res_day0 <- results(dds, contrast = c("group", "Antler_Day0", "Back_Day0"))
+res_day0_shrunk <- lfcShrink(dds, contrast = c("group", "Antler_Day0", "Back_Day0"), type = "ashr")
+
+# Convert to data frame and filter
+res_day0_df <- as.data.frame(res_day0_shrunk)
+res_day0_df$gene <- rownames(res_day0_df)
+
+res_day0_df <- res_day0_df[!grepl("^ENS", res_day0_df$gene), ]
+res_day0_df <- na.omit(res_day0_df)
+
+res_day0_filtered <- res_day0_df[res_day0_df$padj < 0.05 & abs(res_day0_df$log2FoldChange) > 1, ]
+
+# Count how many DEGs passed filters
+num_degs_day0 <- nrow(res_day0_filtered)
+num_degs_day0
+
+# Sort by adjusted p-value and take top 25
+res_day0_top25 <- res_day0_filtered[order(res_day0_filtered$padj), ][1:25, ]
+
+# Round for display
+res_day0_top25 <- res_day0_top25[, c("gene", "baseMean", "log2FoldChange", "padj")]
+res_day0_top25$baseMean <- round(res_day0_top25$baseMean, 2)
+res_day0_top25$log2FoldChange <- round(res_day0_top25$log2FoldChange, 2)
+res_day0_top25$padj <- signif(res_day0_top25$padj, 3)
+
+# Display the table
+res_day0_top25
+```
+
+```{r}
+res_day0_sig <- res_day0_filtered
+
+# Create custom color key
+keyvals <- ifelse(res_day0_sig$log2FoldChange < -1, '#B591CC',   # Repressed (down in Antler)
+                  ifelse(res_day0_sig$log2FoldChange > 1,  '#92BC60',   # Induced (up in Antler)
+                         'grey60'))                                            # Not DEG (within FC range)
+
+# Handle any NA log2FCs
+keyvals[is.na(keyvals)] <- 'black'
+
+# Assign color legend names
+names(keyvals)[keyvals == '#92BC60'] <- 'Induced'
+names(keyvals)[keyvals == '#B591CC'] <- 'Repressed'
+names(keyvals)[keyvals == 'grey60']  <- 'Not DEG'
+
+# Generate volcano plot with custom coloring
+EnhancedVolcano(res_day0_sig,
+                lab = rownames(res_day0_sig),
+                x = 'log2FoldChange',
+                y = 'padj',
+                title = 'Volcano Plot: Antler vs Back (Day 0)',
+                pCutoff = 0.05,
+                FCcutoff = 1,
+                colCustom = keyvals,
+                pointSize = 2.5,
+                labSize = 3,
+                legendPosition = 'right',
+                drawConnectors = TRUE)
+```
+
+```{r}
+# 1. Connect to Ensembl BioMart for Bos taurus
+mart <- useMart("ensembl", dataset = "btaurus_gene_ensembl")
+
+# 2. Use gene symbols from your filtered DEGs (Day 0)
+deg_symbols <- res_day0_filtered$gene  # This should already exist from your DEG filtering
+
+# 3. Retrieve peptide (protein) sequences
+seqs <- getSequence(
+  id = deg_symbols,
+  type = "external_gene_name",
+  seqType = "peptide",
+  mart = mart
+)
+
+# 4. Clean up: remove duplicates and missing sequences
+seqs_clean <- seqs[!duplicated(seqs$external_gene_name), ]
+seqs_clean <- seqs_clean[!is.na(seqs_clean$peptide) & seqs_clean$peptide != "", ]
+
+# 5. Write to FASTA file for InterProScan
+fasta_file <- "day0_deg_proteins.fasta"
+con <- file(fasta_file, open = "wt")
+
+for (i in 1:nrow(seqs_clean)) {
+  gene <- seqs_clean$external_gene_name[i]
+  peptide <- seqs_clean$peptide[i]
+  writeLines(paste0(">", gene), con)
+  writeLines(peptide, con)
+}
+close(con)
+```
+
+```{r}
+interpro <- read.delim("interproscan_day0.tsv", header = TRUE, sep = "\t", quote = "")
+```
+
+```{r}
+colnames(interpro) <- c(
+  "Protein_Accession", "Sequence_MD5", "Sequence_Length", "Analysis", "Signature_Accession",
+  "Signature_Description", "Start", "End", "Score", "Status", "Date", "InterPro_Accession",
+  "InterPro_Description", "GO_Terms", "Pathways"
+)
+```
+
+```{r}
+interpro_go <- interpro[interpro$GO_Terms != "-", ]
+```
+
+```{r}
+all_go_terms <- unique(unlist(strsplit(interpro_go$GO_Terms, split = "\\|")))
+length(all_go_terms)  # Total number of unique GO terms
+```
+
+```{r}
+clean_go_ids <- gsub("\\(.*\\)", "", all_go_terms)
+clean_go_ids <- unique(clean_go_ids)
+```
+
+```{r}
+# 1. Get GO term names and ontology classes
+go_terms <- Term(clean_go_ids)
+go_ontology <- Ontology(clean_go_ids)
+
+# 2. Create a logical vector for non-missing GO terms
+valid_idx <- !is.na(go_terms) & !is.na(go_ontology)
+
+# 3. Build the data frame ONLY with valid GO IDs
+go_annotation <- data.frame(
+  GO_ID = clean_go_ids[valid_idx],
+  GO_Term = go_terms[valid_idx],
+  Ontology = go_ontology[valid_idx],
+  stringsAsFactors = FALSE
+)
+
+go_annotation
+```
+
+```{r}
+# Count frequency of GO terms (if from InterProScan)
+top_go <- interpro_go %>%
+  separate_rows(GO_Terms, sep = "\\|") %>%
+  mutate(GO_Terms = gsub("\\(.*\\)", "", GO_Terms)) %>%
+  count(GO_Terms, sort = TRUE)
+
+# Merge with descriptions
+top_go_annotated <- merge(top_go, go_annotation, by.x = "GO_Terms", by.y = "GO_ID")
+```
+
+```{r}
+top10_go <- top_go_annotated %>%
+  arrange(desc(n)) %>%
+  slice_head(n = 10)
+
+# Color map based on abbreviations used in GO.db
+go_colors <- c(
+  "BP" = "#1b9e77",  # biological process
+  "MF" = "#7570b3",  # molecular function
+  "CC" = "#d95f02"   # cellular component
+)
+
+# Now draw the barplot
+ggplot((top10_go), aes(x = reorder(GO_Term, n), y = n, fill = Ontology)) +
+  geom_col(show.legend = TRUE) +
+  coord_flip() +
+  scale_fill_manual(values = go_colors) +
+  labs(
+    title = "Top GO Terms – Day 0",
+    x = "GO Term",
+    y = "Count"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "bottom",
+    axis.text.y = element_text(size = 10)
+  )
+```
+
+```{r}
+signature_counts <- interpro_go %>%
+  filter(Signature_Description != "-") %>%
+  count(Signature_Description, sort = TRUE)
+
+# Top 10
+top10_signatures <- signature_counts %>%
+  slice_head(n = 10)
+
+# Plot
+ggplot(top10_signatures, aes(x = reorder(Signature_Description, n), y = n)) +
+  geom_col(fill = 'black') +
+  coord_flip() +
+  labs(
+    title = "Top 10 InterPro Signature Descriptions – Day 0",
+    x = "Signature Description",
+    y = "Count"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.text.y = element_text(size = 10)
+  )
+```
+```{r}
+# For GO terms
+go_annotation <- go_annotation %>%
+  mutate(
+    Category = case_when(
+      str_detect(GO_Term, regex("regeneration|wound healing|stem cell|migration|angiogenesis|axon|epithelial|proliferation|morphogenesis|matrix remodeling|immune modulation|immune regulation|re-epithelialization|locomotion|chemotaxis|axon regeneration|tissue repair", ignore_case = TRUE)) ~ "Regeneration",
+      str_detect(GO_Term, regex("fibrosis|collagen|scar|TGF|inflammation|matrix", ignore_case = TRUE)) ~ "Fibrosis",
+      TRUE ~ "Other"
+    )
+  )
+
+# For Signature Descriptions
+signature_counts <- signature_counts %>%
+  mutate(
+    Category = case_when(
+      str_detect(Signature_Description, regex("regeneration|wound healing|stem cell|migration|angiogenesis|axon|epithelial|proliferation|morphogenesis|matrix remodeling|immune modulation|immune regulation|re-epithelialization|locomotion|chemotaxis|axon regeneration|tissue repair", ignore_case = TRUE)) ~ "Regeneration",
+      str_detect(Signature_Description, regex("fibrosis|fibrotic|scar|scarring|collagen|ECM deposition|ECM organization|matrix production|matrix deposition|TGF|TGF-beta|myofibroblast|chronic inflammation|neutrophil activation|fibroblast activation|crosslinking|stiffening|lysyl oxidase|extracellular matrix production|extracellular matrix organization", ignore_case = TRUE)) ~ "Fibrosis",
+      TRUE ~ "Other"
+    )
+  )
+
+```
+
+```{r}
+# Count GO
+table(go_annotation$Category)
+
+# Count InterPro signatures
+table(signature_counts$Category)
+
+```
+
+```{r}
+# Suppose you already classified GO terms and InterPro as:
+# (you should have a column called 'Category' like "Fibrosis", "Regeneration", "Other")
+
+# For GO Terms:
+fibrosis_go <- go_annotation %>%
+  filter(Category == "Fibrosis")
+
+regeneration_go <- go_annotation %>%
+  filter(Category == "Regeneration")
+
+# For InterPro Signatures:
+fibrosis_interpro <- signature_counts %>%
+  filter(Category == "Fibrosis")
+
+regeneration_interpro <- signature_counts %>%
+  filter(Category == "Regeneration")
+
+# View them:
+fibrosis_go
+regeneration_go
+fibrosis_interpro
+regeneration_interpro
+
+```
+
+\*\* BACK VS ANTLER DAY 3 \*\*
+
+```{r}
+# Set reference to Back_Day3
+dds$group <- relevel(dds$group, ref = "Back_Day3")
+
+# Run DESeq with updated reference
+dds <- DESeq(dds)
+
+# Extract DEGs and shrink LFCs
+res_day3 <- results(dds, contrast = c("group", "Antler_Day3", "Back_Day3"))
+res_day3_shrunk <- lfcShrink(dds, contrast = c("group", "Antler_Day3", "Back_Day3"), type = "ashr")
+
+# Convert to data frame and filter
+res_day3_df <- as.data.frame(res_day3_shrunk)
+res_day3_df$gene <- rownames(res_day3_df)
+
+res_day3_df <- res_day3_df[!grepl("^ENS", res_day3_df$gene), ]
+res_day3_df <- na.omit(res_day3_df)
+
+res_day3_filtered <- res_day3_df[res_day3_df$padj < 0.1 & abs(res_day3_df$log2FoldChange) > 1, ]
+
+# Count how many DEGs passed filters
+num_degs_day3 <- nrow(res_day3_filtered)
+num_degs_day3
+
+# Sort by adjusted p-value and take top 15
+res_day3_top15 <- res_day3_filtered[order(res_day3_filtered$padj), ][1:15, ]
+
+# Round for display
+res_day3_top15 <- res_day3_top15[, c("gene", "baseMean", "log2FoldChange", "padj")]
+res_day3_top15$baseMean <- round(res_day3_top15$baseMean, 2)
+res_day3_top15$log2FoldChange <- round(res_day3_top15$log2FoldChange, 2)
+res_day3_top15$padj <- signif(res_day3_top15$padj, 3)
+
+# Display the table
+res_day3_top15
+```
+
+```{r}
+res_day3_sig <- res_day3_filtered
+
+# Create custom color key
+keyvals <- ifelse(res_day3_sig$log2FoldChange < -1, '#B591CC',   # Repressed (down in Antler)
+                  ifelse(res_day3_sig$log2FoldChange > 1,  '#92BC60',   # Induced (up in Antler)
+                         'grey60'))                                            # Not DEG (within FC range)
+
+# Handle any NA log2FCs
+keyvals[is.na(keyvals)] <- 'black'
+
+# Assign color legend names
+names(keyvals)[keyvals == '#92BC60'] <- 'Induced'
+names(keyvals)[keyvals == '#B591CC'] <- 'Repressed'
+names(keyvals)[keyvals == 'grey60']  <- 'Not DEG'
+
+# Generate volcano plot with custom coloring
+EnhancedVolcano(res_day3_sig,
+                lab = rownames(res_day3_sig),
+                x = 'log2FoldChange',
+                y = 'padj',
+                title = 'Volcano Plot: Antler vs Back (Day 3)',
+                pCutoff = 0.1,
+                FCcutoff = 1,
+                colCustom = keyvals,
+                pointSize = 2.5,
+                labSize = 3,
+                legendPosition = 'right',
+                drawConnectors = TRUE)
+```
+
+```{r}
+# 1. Connect to Ensembl BioMart for Bos taurus
+mart <- useMart("ensembl", dataset = "btaurus_gene_ensembl")
+
+# 2. Use gene symbols from your filtered DEGs (Day 3)
+deg_symbols <- res_day3_filtered$gene  # This should already exist from your DEG filtering
+
+# 3. Retrieve peptide (protein) sequences
+seqs <- getSequence(
+  id = deg_symbols,
+  type = "external_gene_name",
+  seqType = "peptide",
+  mart = mart
+)
+
+# 4. Clean up: remove duplicates and missing sequences
+seqs_clean <- seqs[!duplicated(seqs$external_gene_name), ]
+seqs_clean <- seqs_clean[!is.na(seqs_clean$peptide) & seqs_clean$peptide != "", ]
+
+# 5. Write to FASTA file for InterProScan
+fasta_file <- "day3_deg_proteins.fasta"
+con <- file(fasta_file, open = "wt")
+
+for (i in 1:nrow(seqs_clean)) {
+  gene <- seqs_clean$external_gene_name[i]
+  peptide <- seqs_clean$peptide[i]
+  writeLines(paste0(">", gene), con)
+  writeLines(peptide, con)
+}
+close(con)
+```
+
+```{r}
+interpro_day3 <- read.delim("interproscan_day3.tsv", header = TRUE, sep = "\t", quote = "")
+```
+
+```{r}
+colnames(interpro_day3) <- c(
+  "Protein_Accession", "Sequence_MD5", "Sequence_Length", "Analysis", "Signature_Accession",
+  "Signature_Description", "Start", "End", "Score", "Status", "Date", "InterPro_Accession",
+  "InterPro_Description", "GO_Terms", "Pathways"
+)
+```
+
+```{r}
+interpro_go_day3 <- interpro_day3[interpro_day3$GO_Terms != "-", ]
+```
+
+```{r}
+all_go_terms_day3 <- unique(unlist(strsplit(interpro_go_day3$GO_Terms, split = "\\|")))
+length(all_go_terms_day3)  # Total number of unique GO terms
+```
+
+```{r}
+clean_go_ids_day3 <- gsub("\\(.*\\)", "", all_go_terms_day3)
+clean_go_ids_day3 <- unique(clean_go_ids_day3)
+```
+
+```{r}
+# 1. Get GO term names and ontology classes
+go_terms_day3 <- Term(clean_go_ids_day3)
+go_ontology_day3 <- Ontology(clean_go_ids_day3)
+
+# 2. Create a logical vector for non-missing GO terms
+valid_idx <- !is.na(go_terms_day3) & !is.na(go_ontology_day3)
+
+# 3. Build the data frame ONLY with valid GO IDs
+go_annotation_day3 <- data.frame(
+  GO_ID = clean_go_ids_day3[valid_idx],
+  GO_Term = go_terms_day3[valid_idx],
+  Ontology = go_ontology_day3[valid_idx],
+  stringsAsFactors = FALSE
+)
+
+go_annotation_day3
+```
+
+```{r}
+# Count frequency of GO terms (if from InterProScan)
+top_go_day3 <- interpro_go_day3 %>%
+  separate_rows(GO_Terms, sep = "\\|") %>%
+  mutate(GO_Terms = gsub("\\(.*\\)", "", GO_Terms)) %>%
+  count(GO_Terms, sort = TRUE)
+
+# Merge with descriptions
+top_go_annotated_day3 <- merge(top_go_day3, go_annotation_day3, by.x = "GO_Terms", by.y = "GO_ID")
+```
+
+```{r}
+top10_go_day3 <- top_go_annotated_day3 %>%
+  arrange(desc(n)) %>%
+  slice_head(n = 10)
+
+# Color map based on abbreviations used in GO.db
+go_colors <- c(
+  "BP" = "#1b9e77",  # biological process
+  "MF" = "#7570b3",  # molecular function
+  "CC" = "#d95f02"   # cellular component
+)
+
+# Now draw the barplot
+ggplot((top10_go_day3), aes(x = reorder(GO_Term, n), y = n, fill = Ontology)) +
+  geom_col(show.legend = TRUE) +
+  coord_flip() +
+  scale_fill_manual(values = go_colors) +
+  labs(
+    title = "Top GO Terms – Day 3",
+    x = "GO Term",
+    y = "Count"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "bottom",
+    axis.text.y = element_text(size = 10)
+  )
+```
+
+```{r}
+signature_counts_day3 <- interpro_go_day3 %>%
+  filter(Signature_Description != "-") %>%
+  count(Signature_Description, sort = TRUE)
+
+# Top 10
+top10_signatures_day3 <- signature_counts_day3 %>%
+  slice_head(n = 10)
+
+# Plot
+ggplot(top10_signatures_day3, aes(x = reorder(Signature_Description, n), y = n)) +
+  geom_col(fill = 'black') +
+  coord_flip() +
+  labs(
+    title = "Top 10 InterPro Signature Descriptions – Day 3",
+    x = "Signature Description",
+    y = "Count"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.text.y = element_text(size = 10)
+  )
+```
+
+```{r}
+# For GO terms
+go_annotation_day3 <- go_annotation_day3 %>%
+  mutate(
+    Category = case_when(
+      str_detect(GO_Term, regex("regeneration|wound healing|stem cell|migration|angiogenesis|axon|epithelial|proliferation|morphogenesis|matrix remodeling|immune modulation|immune regulation|re-epithelialization|locomotion|chemotaxis|axon regeneration|tissue repair", ignore_case = TRUE)) ~ "Regeneration",
+      str_detect(GO_Term, regex("fibrosis|collagen|scar|TGF|inflammation|matrix", ignore_case = TRUE)) ~ "Fibrosis",
+      TRUE ~ "Other"
+    )
+  )
+
+# For Signature Descriptions
+signature_counts_day3 <- signature_counts_day3 %>%
+  mutate(
+    Category = case_when(
+      str_detect(Signature_Description, regex("regeneration|wound healing|stem cell|migration|angiogenesis|axon|epithelial|proliferation|morphogenesis|matrix remodeling|immune modulation|immune regulation|re-epithelialization|locomotion|chemotaxis|axon regeneration|tissue repair", ignore_case = TRUE)) ~ "Regeneration",
+      str_detect(Signature_Description, regex("fibrosis|fibrotic|scar|scarring|collagen|ECM deposition|ECM organization|matrix production|matrix deposition|TGF|TGF-beta|myofibroblast|chronic inflammation|neutrophil activation|fibroblast activation|crosslinking|stiffening|lysyl oxidase|extracellular matrix production|extracellular matrix organization", ignore_case = TRUE)) ~ "Fibrosis",
+      TRUE ~ "Other"
+    )
+  )
+```
+
+```{r}
+# Count GO
+table(go_annotation_day3$Category)
+
+# Count InterPro signatures
+table(signature_counts_day3$Category)
+
+```
+
+```{r}
+# Suppose you already classified GO terms and InterPro as:
+# (you should have a column called 'Category' like "Fibrosis", "Regeneration", "Other")
+
+# For GO Terms:
+fibrosis_go_day3 <- go_annotation_day3 %>%
+  filter(Category == "Fibrosis")
+
+regeneration_go_day3 <- go_annotation_day3 %>%
+  filter(Category == "Regeneration")
+
+# For InterPro Signatures:
+fibrosis_interpro_day3 <- signature_counts_day3 %>%
+  filter(Category == "Fibrosis")
+
+regeneration_interpro_day3 <- signature_counts_day3 %>%
+  filter(Category == "Regeneration")
+
+# View them:
+fibrosis_go_day3
+regeneration_go_day3
+fibrosis_interpro_day3
+regeneration_interpro_day3
+
+```
+
+\*\* BACK VS ANTLER DAY 7\*\*
+
+```{r}
+# Set reference to Back_Day7
+dds$group <- relevel(dds$group, ref = "Back_Day7")
+
+# Run DESeq with updated reference
+dds <- DESeq(dds)
+
+# Extract DEGs and shrink LFCs
+res_day7 <- results(dds, contrast = c("group", "Antler_Day7", "Back_Day7"))
+res_day7_shrunk <- lfcShrink(dds, contrast = c("group", "Antler_Day7", "Back_Day7"), type = "ashr")
+
+# Convert to data frame and filter
+res_day7_df <- as.data.frame(res_day7_shrunk)
+res_day7_df$gene <- rownames(res_day7_df)
+
+res_day7_df <- res_day7_df[!grepl("^ENS", res_day7_df$gene), ]
+res_day7_df <- na.omit(res_day7_df)
+
+res_day7_filtered <- res_day7_df[res_day7_df$padj < 0.05 & abs(res_day7_df$log2FoldChange) > 1, ]
+
+# Count how many DEGs passed filters
+num_degs_day7 <- nrow(res_day7_filtered)
+num_degs_day7
+
+# Sort by adjusted p-value and take top 25
+res_day7_top25 <- res_day7_filtered[order(res_day7_filtered$padj), ][1:25, ]
+
+# Round for display
+res_day7_top25 <- res_day7_top25[, c("gene", "baseMean", "log2FoldChange", "padj")]
+res_day7_top25$baseMean <- round(res_day7_top25$baseMean, 2)
+res_day7_top25$log2FoldChange <- round(res_day7_top25$log2FoldChange, 2)
+res_day7_top25$padj <- signif(res_day7_top25$padj, 3)
+
+# Display the table
+res_day7_top25
+
+```
+
+
+```{r}
+res_day7_sig <- res_day7_filtered
+
+# Create custom color key
+keyvals <- ifelse(res_day7_sig$log2FoldChange < -1, '#B591CC',   # Repressed (down in Antler)
+                  ifelse(res_day7_sig$log2FoldChange > 1,  '#92BC60',   # Induced (up in Antler)
+                         'grey60'))                                            # Not DEG (within FC range)
+
+# Handle any NA log2FCs
+keyvals[is.na(keyvals)] <- 'black'
+
+# Assign color legend names
+names(keyvals)[keyvals == '#92BC60'] <- 'Induced'
+names(keyvals)[keyvals == '#B591CC'] <- 'Repressed'
+names(keyvals)[keyvals == 'grey60']  <- 'Not DEG'
+
+# Generate volcano plot with custom coloring
+EnhancedVolcano(res_day7_sig,
+                lab = rownames(res_day7_sig),
+                x = 'log2FoldChange',
+                y = 'padj',
+                title = 'Volcano Plot: Antler vs Back (Day 7)',
+                pCutoff = 0.05,
+                FCcutoff = 1,
+                colCustom = keyvals,
+                pointSize = 2.5,
+                labSize = 3,
+                legendPosition = 'right',
+                drawConnectors = TRUE)
+```
+
+```{r}
+# 1. Connect to Ensembl BioMart for Bos taurus
+mart <- useMart("ensembl", dataset = "btaurus_gene_ensembl")
+
+# 2. Use gene symbols from your filtered DEGs (Day 7)
+deg_symbols <- res_day7_filtered$gene  # This should already exist from your DEG filtering
+
+# 3. Retrieve peptide (protein) sequences
+seqs <- getSequence(
+  id = deg_symbols,
+  type = "external_gene_name",
+  seqType = "peptide",
+  mart = mart
+)
+
+# 4. Clean up: remove duplicates and missing sequences
+seqs_clean <- seqs[!duplicated(seqs$external_gene_name), ]
+seqs_clean <- seqs_clean[!is.na(seqs_clean$peptide) & seqs_clean$peptide != "", ]
+
+# 5. Write to FASTA file for InterProScan
+fasta_file <- "day7_deg_proteins.fasta"
+con <- file(fasta_file, open = "wt")
+
+for (i in 1:nrow(seqs_clean)) {
+  gene <- seqs_clean$external_gene_name[i]
+  peptide <- seqs_clean$peptide[i]
+  writeLines(paste0(">", gene), con)
+  writeLines(peptide, con)
+}
+close(con)
+```
+
+```{r}
+interpro_day7 <- read.delim("interproscan_day7.tsv", header = TRUE, sep = "\t", quote = "")
+```
+
+```{r}
+colnames(interpro_day7) <- c(
+  "Protein_Accession", "Sequence_MD5", "Sequence_Length", "Analysis", "Signature_Accession",
+  "Signature_Description", "Start", "End", "Score", "Status", "Date", "InterPro_Accession",
+  "InterPro_Description", "GO_Terms", "Pathways"
+)
+```
+
+```{r}
+interpro_go_day7 <- interpro_day7[interpro_day7$GO_Terms != "-", ]
+```
+
+```{r}
+all_go_terms_day7 <- unique(unlist(strsplit(interpro_go_day7$GO_Terms, split = "\\|")))
+length(all_go_terms_day7)  # Total number of unique GO terms
+```
+
+```{r}
+clean_go_ids_day7 <- gsub("\\(.*\\)", "", all_go_terms_day7)
+clean_go_ids_day7 <- unique(clean_go_ids_day7)
+```
+
+```{r}
+# 1. Get GO term names and ontology classes
+go_terms_day7 <- Term(clean_go_ids_day7)
+go_ontology_day7 <- Ontology(clean_go_ids_day7)
+
+# 2. Create a logical vector for non-missing GO terms
+valid_idx <- !is.na(go_terms_day7) & !is.na(go_ontology_day7)
+
+# 3. Build the data frame ONLY with valid GO IDs
+go_annotation_day7 <- data.frame(
+  GO_ID = clean_go_ids_day7[valid_idx],
+  GO_Term = go_terms_day7[valid_idx],
+  Ontology = go_ontology_day7[valid_idx],
+  stringsAsFactors = FALSE
+)
+
+go_annotation_day7
+```
+
+```{r}
+# Count frequency of GO terms (if from InterProScan)
+top_go_day7 <- interpro_go_day7 %>%
+  separate_rows(GO_Terms, sep = "\\|") %>%
+  mutate(GO_Terms = gsub("\\(.*\\)", "", GO_Terms)) %>%
+  count(GO_Terms, sort = TRUE)
+
+# Merge with descriptions
+top_go_annotated_day7 <- merge(top_go_day7, go_annotation_day7, by.x = "GO_Terms", by.y = "GO_ID")
+```
+
+```{r}
+top10_go_day7 <- top_go_annotated_day7 %>%
+  arrange(desc(n)) %>%
+  slice_head(n = 10)
+
+# Color map based on abbreviations used in GO.db
+go_colors <- c(
+  "BP" = "#1b9e77",  # biological process
+  "MF" = "#7570b3",  # molecular function
+  "CC" = "#d95f02"   # cellular component
+)
+
+# Now draw the barplot
+ggplot((top10_go_day7), aes(x = reorder(GO_Term, n), y = n, fill = Ontology)) +
+  geom_col(show.legend = TRUE) +
+  coord_flip() +
+  scale_fill_manual(values = go_colors) +
+  labs(
+    title = "Top GO Terms – Day 7",
+    x = "GO Term",
+    y = "Count"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "bottom",
+    axis.text.y = element_text(size = 10)
+  )
+```
+
+```{r}
+signature_counts_day7 <- interpro_go_day7 %>%
+  filter(Signature_Description != "-") %>%
+  count(Signature_Description, sort = TRUE)
+
+# Top 10
+top10_signatures_day7 <- signature_counts_day7 %>%
+  slice_head(n = 10)
+
+# Plot
+ggplot(top10_signatures_day7, aes(x = reorder(Signature_Description, n), y = n)) +
+  geom_col(fill = 'black') +
+  coord_flip() +
+  labs(
+    title = "Top 10 InterPro Signature Descriptions – Day 7",
+    x = "Signature Description",
+    y = "Count"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.text.y = element_text(size = 10)
+  )
+```
+
+```{r}
+# For GO terms
+go_annotation_day7 <- go_annotation_day7 %>%
+  mutate(
+    Category = case_when(
+      str_detect(GO_Term, regex("regeneration|wound healing|stem cell|migration|angiogenesis|axon|epithelial|proliferation|morphogenesis|matrix remodeling|immune modulation|immune regulation|re-epithelialization|locomotion|chemotaxis|axon regeneration|tissue repair", ignore_case = TRUE)) ~ "Regeneration",
+      str_detect(GO_Term, regex("fibrosis|collagen|scar|TGF|inflammation|matrix", ignore_case = TRUE)) ~ "Fibrosis",
+      TRUE ~ "Other"
+    )
+  )
+
+# For Signature Descriptions
+signature_counts_day7 <- signature_counts_day7 %>%
+  mutate(
+    Category = case_when(
+      str_detect(Signature_Description, regex("regeneration|wound healing|stem cell|migration|angiogenesis|axon|epithelial|proliferation|morphogenesis|matrix remodeling|immune modulation|immune regulation|re-epithelialization|locomotion|chemotaxis|axon regeneration|tissue repair", ignore_case = TRUE)) ~ "Regeneration",
+      str_detect(Signature_Description, regex("fibrosis|fibrotic|scar|scarring|collagen|ECM deposition|ECM organization|matrix production|matrix deposition|TGF|TGF-beta|myofibroblast|chronic inflammation|neutrophil activation|fibroblast activation|crosslinking|stiffening|lysyl oxidase|extracellular matrix production|extracellular matrix organization", ignore_case = TRUE)) ~ "Fibrosis",
+      TRUE ~ "Other"
+    )
+  )
+
+```
+
+```{r}
+# Count GO
+table(go_annotation_day7$Category)
+
+# Count InterPro signatures
+table(signature_counts_day7$Category)
+
+```
+
+```{r}
+# Suppose you already classified GO terms and InterPro as:
+# (you should have a column called 'Category' like "Fibrosis", "Regeneration", "Other")
+
+# For GO Terms:
+fibrosis_go_day7 <- go_annotation_day7 %>%
+  filter(Category == "Fibrosis")
+
+regeneration_go_day7 <- go_annotation_day7 %>%
+  filter(Category == "Regeneration")
+
+# For InterPro Signatures:
+fibrosis_interpro_day7 <- signature_counts_day7 %>%
+  filter(Category == "Fibrosis")
+
+regeneration_interpro_day7 <- signature_counts_day7 %>%
+  filter(Category == "Regeneration")
+
+# View them:
+fibrosis_go_day7
+regeneration_go_day7
+fibrosis_interpro_day7
+regeneration_interpro_day7
+
+```
+
+\*\* BACK VS ANTLER DAY 14\*\*
+
+```{r}
+# Set reference to Back_Day14
+dds$group <- relevel(dds$group, ref = "Back_Day14")
+
+# Run DESeq with updated reference
+dds <- DESeq(dds)
+
+# Extract DEGs and shrink LFCs
+res_day14 <- results(dds, contrast = c("group", "Antler_Day14", "Back_Day14"))
+res_day14_shrunk <- lfcShrink(dds, contrast = c("group", "Antler_Day14", "Back_Day14"), type = "ashr")
+
+# Convert to data frame and filter
+res_day14_df <- as.data.frame(res_day14_shrunk)
+res_day14_df$gene <- rownames(res_day14_df)
+
+res_day14_df <- res_day14_df[!grepl("^ENS", res_day14_df$gene), ]
+res_day14_df <- na.omit(res_day14_df)
+
+res_day14_filtered <- res_day14_df[res_day14_df$padj < 0.05 & abs(res_day14_df$log2FoldChange) > 1, ]
+
+# Count how many DEGs passed filters
+num_degs_day14 <- nrow(res_day14_filtered)
+num_degs_day14
+
+# Sort by adjusted p-value and take top 25
+res_day14_top25 <- res_day14_filtered[order(res_day14_filtered$padj), ][1:25, ]
+
+# Round for display
+res_day14_top25 <- res_day14_top25[, c("gene", "baseMean", "log2FoldChange", "padj")]
+res_day14_top25$baseMean <- round(res_day14_top25$baseMean, 2)
+res_day14_top25$log2FoldChange <- round(res_day14_top25$log2FoldChange, 2)
+res_day14_top25$padj <- signif(res_day14_top25$padj, 3)
+
+# Display the table
+res_day14_top25
+```
+
+```{r}
+res_day14_sig <- res_day14_filtered
+
+# Create custom color key
+keyvals <- ifelse(res_day14_sig$log2FoldChange < -1, '#B591CC',   # Repressed (down in Antler)
+                  ifelse(res_day14_sig$log2FoldChange > 1,  '#92BC60',   # Induced (up in Antler)
+                         'grey60'))                                            # Not DEG (within FC range)
+
+# Handle any NA log2FCs
+keyvals[is.na(keyvals)] <- 'black'
+
+# Assign color legend names
+names(keyvals)[keyvals == '#92BC60'] <- 'Induced'
+names(keyvals)[keyvals == '#B591CC'] <- 'Repressed'
+names(keyvals)[keyvals == 'grey60']  <- 'Not DEG'
+
+# Generate volcano plot with custom coloring
+EnhancedVolcano(res_day14_sig,
+                lab = rownames(res_day14_sig),
+                x = 'log2FoldChange',
+                y = 'padj',
+                title = 'Volcano Plot: Antler vs Back (Day 14)',
+                pCutoff = 0.05,
+                FCcutoff = 1,
+                colCustom = keyvals,
+                pointSize = 2.5,
+                labSize = 3,
+                legendPosition = 'right',
+                drawConnectors = TRUE)
+```
+
+```{r}
+# 1. Connect to Ensembl BioMart for Bos taurus
+mart <- useMart("ensembl", dataset = "btaurus_gene_ensembl")
+
+# 2. Use gene symbols from your filtered DEGs (Day 14)
+deg_symbols <- res_day14_filtered$gene  # This should already exist from your DEG filtering
+
+# 3. Retrieve peptide (protein) sequences
+seqs <- getSequence(
+  id = deg_symbols,
+  type = "external_gene_name",
+  seqType = "peptide",
+  mart = mart
+)
+
+# 4. Clean up: remove duplicates and missing sequences
+seqs_clean <- seqs[!duplicated(seqs$external_gene_name), ]
+seqs_clean <- seqs_clean[!is.na(seqs_clean$peptide) & seqs_clean$peptide != "", ]
+
+# 5. Write to FASTA file for InterProScan
+fasta_file <- "day14_deg_proteins.fasta"
+con <- file(fasta_file, open = "wt")
+
+for (i in 1:nrow(seqs_clean)) {
+  gene <- seqs_clean$external_gene_name[i]
+  peptide <- seqs_clean$peptide[i]
+  writeLines(paste0(">", gene), con)
+  writeLines(peptide, con)
+}
+close(con)
+```
+
+```{r}
+interpro_day14 <- read.delim("interproscan_day14.tsv", header = TRUE, sep = "\t", quote = "")
+```
+
+```{r}
+colnames(interpro_day14) <- c(
+  "Protein_Accession", "Sequence_MD5", "Sequence_Length", "Analysis", "Signature_Accession",
+  "Signature_Description", "Start", "End", "Score", "Status", "Date", "InterPro_Accession",
+  "InterPro_Description", "GO_Terms", "Pathways"
+)
+```
+
+```{r}
+interpro_go_day14 <- interpro_day14[interpro_day14$GO_Terms != "-", ]
+```
+
+```{r}
+all_go_terms_day14 <- unique(unlist(strsplit(interpro_go_day14$GO_Terms, split = "\\|")))
+length(all_go_terms_day14)  # Total number of unique GO terms
+```
+
+```{r}
+clean_go_ids_day14 <- gsub("\\(.*\\)", "", all_go_terms_day14)
+clean_go_ids_day14 <- unique(clean_go_ids_day14)
+```
+
+```{r}
+# 1. Get GO term names and ontology classes
+go_terms_day14 <- Term(clean_go_ids_day14)
+go_ontology_day14 <- Ontology(clean_go_ids_day14)
+
+# 2. Create a logical vector for non-missing GO terms
+valid_idx <- !is.na(go_terms_day14) & !is.na(go_ontology_day14)
+
+# 3. Build the data frame ONLY with valid GO IDs
+go_annotation_day14 <- data.frame(
+  GO_ID = clean_go_ids_day14[valid_idx],
+  GO_Term = go_terms_day14[valid_idx],
+  Ontology = go_ontology_day14[valid_idx],
+  stringsAsFactors = FALSE
+)
+
+go_annotation_day14
+```
+
+```{r}
+# Count frequency of GO terms (if from InterProScan)
+top_go_day14 <- interpro_go_day14 %>%
+  separate_rows(GO_Terms, sep = "\\|") %>%
+  mutate(GO_Terms = gsub("\\(.*\\)", "", GO_Terms)) %>%
+  count(GO_Terms, sort = TRUE)
+
+# Merge with descriptions
+top_go_annotated_day14 <- merge(top_go_day14, go_annotation_day14, by.x = "GO_Terms", by.y = "GO_ID")
+```
+
+```{r}
+top10_go_day14 <- top_go_annotated_day14 %>%
+  arrange(desc(n)) %>%
+  slice_head(n = 10)
+
+# Color map based on abbreviations used in GO.db
+go_colors <- c(
+  "BP" = "#1b9e77",  # biological process
+  "MF" = "#7570b3",  # molecular function
+  "CC" = "#d95f02"   # cellular component
+)
+
+# Now draw the barplot
+ggplot((top10_go_day14), aes(x = reorder(GO_Term, n), y = n, fill = Ontology)) +
+  geom_col(show.legend = TRUE) +
+  coord_flip() +
+  scale_fill_manual(values = go_colors) +
+  labs(
+    title = "Top GO Terms – Day 14",
+    x = "GO Term",
+    y = "Count"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "bottom",
+    axis.text.y = element_text(size = 10)
+  )
+```
+
+```{r}
+signature_counts_day14 <- interpro_go_day14 %>%
+  filter(Signature_Description != "-") %>%
+  count(Signature_Description, sort = TRUE)
+
+# Top 10
+top10_signatures_day14 <- signature_counts_day14 %>%
+  slice_head(n = 10)
+
+# Plot
+ggplot(top10_signatures_day14, aes(x = reorder(Signature_Description, n), y = n)) +
+  geom_col(fill = 'black') +
+  coord_flip() +
+  labs(
+    title = "Top 10 InterPro Signature Descriptions – Day 14",
+    x = "Signature Description",
+    y = "Count"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.text.y = element_text(size = 10)
+  )
+```
+
+```{r}
+# For GO terms
+go_annotation_day14 <- go_annotation_day14 %>%
+  mutate(
+    Category = case_when(
+      str_detect(GO_Term, regex("regeneration|wound healing|stem cell|migration|angiogenesis|axon|epithelial|proliferation|morphogenesis|matrix remodeling|immune modulation|immune regulation|re-epithelialization|locomotion|chemotaxis|axon regeneration|tissue repair", ignore_case = TRUE)) ~ "Regeneration",
+      str_detect(GO_Term, regex("fibrosis|collagen|scar|TGF|inflammation|matrix", ignore_case = TRUE)) ~ "Fibrosis",
+      TRUE ~ "Other"
+    )
+  )
+
+# For Signature Descriptions
+signature_counts_day14 <- signature_counts_day14 %>%
+  mutate(
+    Category = case_when(
+      str_detect(Signature_Description, regex("regeneration|wound healing|stem cell|migration|angiogenesis|axon|epithelial|proliferation|morphogenesis|matrix remodeling|immune modulation|immune regulation|re-epithelialization|locomotion|chemotaxis|axon regeneration|tissue repair", ignore_case = TRUE)) ~ "Regeneration",
+      str_detect(Signature_Description, regex("fibrosis|fibrotic|scar|scarring|collagen|ECM deposition|ECM organization|matrix production|matrix deposition|TGF|TGF-beta|myofibroblast|chronic inflammation|neutrophil activation|fibroblast activation|crosslinking|stiffening|lysyl oxidase|extracellular matrix production|extracellular matrix organization", ignore_case = TRUE)) ~ "Fibrosis",
+      TRUE ~ "Other"
+    )
+  )
+
+```
+
+```{r}
+# Count GO
+table(go_annotation_day14$Category)
+
+# Count InterPro signatures
+table(signature_counts_day14$Category)
+
+```
+
+```{r}
+# Suppose you already classified GO terms and InterPro as:
+# (you should have a column called 'Category' like "Fibrosis", "Regeneration", "Other")
+
+# For GO Terms:
+fibrosis_go_day14 <- go_annotation_day14 %>%
+  filter(Category == "Fibrosis")
+
+regeneration_go_day14 <- go_annotation_day14 %>%
+  filter(Category == "Regeneration")
+
+# For InterPro Signatures:
+fibrosis_interpro_day14 <- signature_counts_day14 %>%
+  filter(Category == "Fibrosis")
+
+regeneration_interpro_day14 <- signature_counts_day14 %>%
+  filter(Category == "Regeneration")
+
+# View them:
+fibrosis_go_day14
+regeneration_go_day14
+fibrosis_interpro_day14
+regeneration_interpro_day14
+
+```
+
+```{r}
+# 1. Collect all DEG symbols from each day
+degs_all <- unique(c(
+  res_day0_filtered$gene,
+  res_day3_filtered$gene,
+  res_day7_filtered$gene,
+  res_day14_filtered$gene
+))
+length(degs_all)  # Check total number of unique DEGs
+
+```
+
+```{r}
+# 2. Map SYMBOL to ENTREZ ID
+library(clusterProfiler)
+library(org.Bt.eg.db)
+
+degs_mapped <- bitr(
+  degs_all,
+  fromType = "SYMBOL",
+  toType = "ENTREZID",
+  OrgDb = org.Bt.eg.db
+)
+
+# Extract only mapped ENTREZ IDs
+entrez_degs <- degs_mapped$ENTREZID
+length(entrez_degs)
+
+```
+
+```{r}
+# 3. Run GO Biological Process enrichment
+ego_all <- enrichGO(
+  gene          = entrez_degs,
+  OrgDb         = org.Bt.eg.db,
+  keyType       = "ENTREZID",
+  ont           = "BP",
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  readable      = TRUE
+)
+
+```
+
+```{r}
+# 4. View top 10 enriched terms (quick table)
+ego_all@result
+
+```
+
+```{r}
+# 5. Plot top 20 enriched GO terms
+library(ggplot2)
+barplot(ego_all, showCategory = 20) + 
+  ggtitle("GO Enrichment: Filtered DEGs Across All Days")
+
+```
+
+```{r}
+# Example function: run enrichGO on a set of DEGs
+run_enrich <- function(deg_df) {
+  mapped <- bitr(deg_df$gene, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Bt.eg.db)
+  if (nrow(mapped) == 0) return(NULL)
+  
+  ego <- enrichGO(
+    gene = mapped$ENTREZID,
+    OrgDb = org.Bt.eg.db,
+    keyType = "ENTREZID",
+    ont = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff = 0.05,
+    readable = TRUE
+  )
+  
+  return(ego)
+}
+
+# Run separately
+ego_day0  <- run_enrich(res_day0_filtered)
+ego_day3  <- run_enrich(res_day3_filtered)
+ego_day7  <- run_enrich(res_day7_filtered)
+ego_day14 <- run_enrich(res_day14_filtered)
+
+```
+
+```{r}
+# Extract p-values and transform
+extract_pval_matrix <- function(ego, label) {
+  if (is.null(ego)) return(data.frame())
+  
+  df <- as.data.frame(ego)
+  df <- df[, c("Description", "p.adjust")]
+  df$log10_pval <- -log10(df$p.adjust)
+  df <- df[, c("Description", "log10_pval")]
+  colnames(df)[2] <- label
+  return(df)
+}
+
+# Build for each timepoint
+df_day0  <- extract_pval_matrix(ego_day0,  "Day0")
+df_day3  <- extract_pval_matrix(ego_day3,  "Day3")
+df_day7  <- extract_pval_matrix(ego_day7,  "Day7")
+df_day14 <- extract_pval_matrix(ego_day14, "Day14")
+
+# Merge all into one
+library(dplyr)
+pval_matrix <- full_join(df_day0, df_day14, by = "Description") 
+            
+# Replace NA with 0 (not significant)
+pval_matrix[is.na(pval_matrix)] <- 0
+
+# Set rownames = GO term names
+rownames(pval_matrix) <- pval_matrix$Description
+pval_matrix <- pval_matrix[, -1]  # Remove Description column
+
+```
+
+```{r}
+# Use pheatmap or ggplot2 to plot
+library(pheatmap)
+
+pheatmap(
+  mat = as.matrix(pval_matrix),
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  color = colorRampPalette(c("white", "violet"))(50),
+  main = "Just-in-Time Analysis: Day 0 vs Day 14",
+  fontsize_row = 7,
+  fontsize_col = 10,
+  border_color = NA
+)
+
+```
