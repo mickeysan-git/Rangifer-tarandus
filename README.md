@@ -9,9 +9,14 @@ My results show that antler velvet tissue activates a unique combination of rege
 
 ## **References**
 
-[1] Euro Bioinformatics Institute. Interpro sequence search tool. https://www.ebi.ac.uk/interpro/search/sequence/, 2025. Accessed May 6, 2025.
+[1] Euro Bioinformatics Institute. Interpro sequence search tool. https://www.ebi.ac.uk/interpro/search/sequence/, 2025.
+
 [2] Mario Luisetto. Regeneration abilities of vertebrates and invertebrates and relationship with pharmacological research: Hypothesis of genetic evolution work and mi- croenvironment inhibition role. International Journal of Cancer and Clinical Research, 7:142, 2020. Mario Luisetto.
+
 [3] Sarthak Sinha and Jeff Biernaskie. Bulk rna-seq datasets supporting fibroblast polarization drives skin regeneration versus fibrosis in adult reindeer. https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc= GSE168746, 2022. NCBI GEO Accession GSE168746.
+
 [4] Sarthak Sinha and Jeff Biernaskie. Fibroblast inflam- matory priming determines regenerative versus fibrotic skin repair in reindeer. Cell, 185(25):4717–4736.e25, 2022. Sarthak Sinha.
+
 [5] Xiaosong Wang et al. Current approaches targeting the wound healing phases to prevent fibrosis and scar- ring. International Journal of Molecular Sciences, 21(5):1695, 2020. Xiaosong Wang.
+
 [6] Wei Zhang. Antler stem cells and their potential in wound healing and bone regeneration. World Journal of Stem Cells, 13(8):1049–1057, 2021. Wei Zhang.
